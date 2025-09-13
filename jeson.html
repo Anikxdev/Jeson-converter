@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Guest JSON Converter — UID & Password</title>
+  <style>
+    :root {
+      --bg-color: #0f172a;
+      --panel-bg: #0b1220;
+      --text-color: #e6eef8;
+      --secondary-text: #bfcfe0;
+      --accent: #0ea5a3;
+      --danger: #ffb4b4;
+    }
+    [data-theme="light"] {
+      --bg-color: #f4f4f4;
+      --panel-bg: #ffffff;
+      --text-color: #111;
+      --secondary-text: #555;
+      --accent: #0ea5a3;
+      --danger: #d32f2f;
+    }
+    body {
+      margin: 0; min-height: 100vh; display: flex;
+      align-items: flex-start; justify-content: center;
+      padding: 20px;
+      font-family: Inter, system-ui, Arial;
+      background: var(--bg-color); color: var(--text-color);
+    }
+    .app {
+      width: 100%; max-width: 980px;
+      background: var(--panel-bg); padding: 20px;
+      border-radius: 12px; box-shadow: 0 8px 30px rgba(2,6,23,.7);
+    }
+    h1 { margin:0 0 8px; font-size: 20px; }
+    p.small { margin:0 0 18px; color: var(--secondary-text); }
+    .panel { display: grid; grid-template-columns: 1fr 360px; gap: 16px; }
+    .box { background: rgba(255,255,255,.03); padding:14px; border-radius:10px; }
+    label { display:block; font-size:13px; margin-bottom:6px; color: var(--secondary-text); }
+    input[type=text], select { width:100%; padding:10px; border-radius:8px; border:1px solid rgba(255,255,255,.04); background:transparent; color:inherit; }
+    .row { display:flex; gap:10px; flex-wrap: wrap; }
+    button { padding:10px 12px; border-radius:8px; border:0; background:var(--accent); color:#022; cursor:pointer; }
+    button.secondary { background:transparent; border:1px solid rgba(255,255,255,.06); color:#cfe8ee; }
+    .files-list { max-height:250px; overflow:auto; margin-top:10px; }
+    table { width:100%; border-collapse: collapse; }
+    td, th { padding:8px; border-bottom:1px dashed rgba(255,255,255,.03); font-size:13px; word-break: break-all; }
+    .preview { max-height:420px; overflow:auto; margin-top:12px; }
+    .progress { height:8px; background:rgba(255,255,255,.03); border-radius:6px; overflow:hidden; margin-top:8px; }
+    .bar { height:100%; width:0; background:#10b981; }
+    footer { margin-top:12px; color:#87a6b9; font-size:12px; }
+    @media(max-width:800px) {
+      .panel { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body data-theme="dark">
+  <div class="app">
+    <h1>Guest JSON Converter</h1>
+    <p class="small">Upload JSON/TXT/ZIP files with guest account data and export a clean JSON in the format: <code>[{"uid":"...","password":"..."}]</code></p>
+
+    <div class="panel">
+      <div class="box">
+        <label>Choose Files (JSON, TXT, ZIP)</label>
+        <input id="fileInput" type="file" multiple accept=".json,.txt,.zip" />
+        <div class="files-list" id="filesList"></div>
+
+        <div style="margin-top:12px">
+          <label>Existing JSON to merge (optional)</label>
+          <input id="existingJsonInput" type="file" accept="application/json" />
+        </div>
+
+        <div style="margin-top:12px">
+          <label>Output file name</label>
+          <input id="outputName" type="text" placeholder="output.json" value="converted_guests.json" />
+        </div>
+
+        <div style="margin-top:12px" class="row">
+          <button id="processBtn">Process files →</button>
+          <button id="downloadBtn" class="secondary" disabled>Download JSON</button>
+          <button id="clearBtn" class="secondary">Clear All</button>
+          <button id="themeBtn" class="secondary">Toggle Light/Dark</button>
+        </div>
+
+        <div class="progress"><div class="bar" id="progressBar"></div></div>
+        <div id="status" style="margin-top:8px;color:#bcdbe7;font-size:13px"></div>
+      </div>
+
+      <div class="box">
+        <label>Preview / Results</label>
+        <div class="preview">
+          <table id="resultTable"><thead><tr><th>#</th><th>UID</th><th>Password</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </div>
+
+    <footer>
+      Duplicates are removed (UID or password). Output is always in this format: <code>[{"uid":"...","password":"..."}]</code>.
+    </footer>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script>
+    const fileInput=document.getElementById('fileInput');
+    const filesList=document.getElementById('filesList');
+    const processBtn=document.getElementById('processBtn');
+    const status=document.getElementById('status');
+    const progressBar=document.getElementById('progressBar');
+    const previewBody=document.querySelector('#resultTable tbody');
+    const downloadBtn=document.getElementById('downloadBtn');
+    const existingJsonInput=document.getElementById('existingJsonInput');
+    const outputNameInput=document.getElementById('outputName');
+    const clearBtn=document.getElementById('clearBtn');
+    const themeBtn=document.getElementById('themeBtn');
+    const bodyEl = document.body;
+
+    let fileEntries=[], results=[], mergedExisting=[];
+
+    fileInput.addEventListener('change', e=>{fileEntries=Array.from(e.target.files); renderFiles();});
+    existingJsonInput.addEventListener('change', async e=>{
+      const f=e.target.files[0]; if(!f) return;
+      try {
+        const txt=await f.text();
+        const j=JSON.parse(txt);
+        mergedExisting = Array.isArray(j)?j:[j];
+        status.textContent=`Loaded existing JSON with ${mergedExisting.length} entries.`;
+      } catch {status.textContent='Failed to parse existing JSON'}
+    });
+
+    function renderFiles(){
+      filesList.innerHTML='';
+      if(fileEntries.length===0){filesList.textContent='No files selected.'; return;}
+      fileEntries.forEach((f,i)=>{
+        const d=document.createElement('div');
+        d.style.padding='6px 0';
+        d.textContent=`${i+1}. ${f.name}`;
+        filesList.appendChild(d);
+      });
+    }
+
+    function extractCredentials(obj){
+      let res=[];
+      if(obj && obj.guest_account_info){
+        let info=obj.guest_account_info;
+        let uid=info["com.garena.msdk.guest_uid"];
+        let password=info["com.garena.msdk.guest_password"];
+        if(uid && password){ res.push({uid:String(uid), password:String(password)}); }
+      } else if(Array.isArray(obj)){ obj.forEach(i=>res=res.concat(extractCredentials(i))); }
+      else if(typeof obj==="object" && obj!==null){ Object.values(obj).forEach(v=>res=res.concat(extractCredentials(v))); }
+      return res;
+    }
+
+    async function processFiles(){
+      results=[]; progressBar.style.width='0%'; status.textContent='Processing...'; downloadBtn.disabled=true;
+      const total = fileEntries.length||1; let done=0;
+
+      for(const f of fileEntries){
+        try{
+          if(f.name.endsWith(".zip")){
+            let zip = await JSZip.loadAsync(f);
+            for(let filename in zip.files){
+              if(!zip.files[filename].dir){
+                let content = await zip.files[filename].async("string");
+                results = results.concat(parseContent(content));
+              }
+            }
+          } else {
+            const txt = await f.text();
+            results = results.concat(parseContent(txt));
+          }
+        } catch(e){console.error('Error', f.name,e);}
+        done++; progressBar.style.width=Math.round((done/total)*100)+'%';
+      }
+
+      // Merge existing JSON
+      if(mergedExisting.length){
+        for(const obj of mergedExisting){
+          if(typeof obj==='object' && obj.uid && obj.password) results.push({uid:String(obj.uid), password:String(obj.password)});
+        }
+      }
+
+      // Deduplicate by UID OR password
+      const seenUID = new Set(), seenPass = new Set();
+      results = results.filter(r=>{
+        if(seenUID.has(r.uid) || seenPass.has(r.password)) return false;
+        seenUID.add(r.uid); seenPass.add(r.password); return true;
+      });
+
+      status.textContent=`Done. ${results.length} unique entries.`;
+      renderPreview(); downloadBtn.disabled=results.length===0;
+    }
+
+    function parseContent(content){
+      let creds=[];
+      try { let parsed=JSON.parse(content); creds = extractCredentials(parsed); }
+      catch{
+        const lines = content.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+        for(const line of lines){
+          try{ let parsed=JSON.parse(line); creds=creds.concat(extractCredentials(parsed)); } catch{}
+        }
+      }
+      return creds;
+    }
+
+    function renderPreview(){
+      previewBody.innerHTML='';
+      results.slice(0,1000).forEach((r,i)=>{
+        const tr=document.createElement('tr');
+        tr.innerHTML=`<td>${i+1}</td><td>${r.uid}</td><td>${r.password}</td>`;
+        previewBody.appendChild(tr);
+      });
+    }
+
+    processBtn.addEventListener('click', async()=>{
+      if(fileEntries.length===0){status.textContent='Please select files first.'; return;}
+      await processFiles();
+    });
+
+    downloadBtn.addEventListener('click', ()=>{
+      const outName = outputNameInput.value || 'converted.json';
+      const blob = new Blob([JSON.stringify(results,null,2)], {type:'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a=document.createElement('a'); a.href=url; a.download=outName; document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    });
+
+    clearBtn.addEventListener('click', ()=>{
+      fileEntries=[]; results=[]; mergedExisting=[];
+      fileInput.value=''; existingJsonInput.value=''; outputNameInput.value='converted_guests.json';
+      filesList.innerHTML=''; previewBody.innerHTML=''; status.textContent='Cleared all inputs and results.'; progressBar.style.width='0%';
+      downloadBtn.disabled=true;
+    });
+
+    themeBtn.addEventListener('click', ()=>{
+      if(bodyEl.dataset.theme==='dark') bodyEl.dataset.theme='light';
+      else bodyEl.dataset.theme='dark';
+    });
+
+  </script>
+</body>
+</html>
